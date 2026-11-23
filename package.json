@@ -1,0 +1,17 @@
+{
+  "name": "course-rag-chatbot",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:index": "node scripts/build-index.mjs",
+    "test:questions": "node scripts/evaluate-tests.mjs",
+    "start": "node server.mjs",
+    "dev": "node --watch server.mjs"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "express": "^5.1.0",
+    "openai": "^6.16.0"
+  }
+}

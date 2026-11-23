@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>규정 챗봇</title>
+  <style>
+    :root { color-scheme: light; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    body { margin: 0; background: #f4f7fb; color: #152238; }
+    main { max-width: 820px; margin: 0 auto; padding: 40px 20px 64px; }
+    h1 { margin-bottom: 8px; }
+    .intro { color: #5c6b80; margin-top: 0; }
+    form, .answer, .sources { background: white; border: 1px solid #dbe3ef; border-radius: 16px; padding: 20px; box-shadow: 0 8px 24px #20304a0d; }
+    textarea { width: 100%; box-sizing: border-box; resize: vertical; min-height: 92px; border: 1px solid #bdc9d9; border-radius: 10px; padding: 12px; font: inherit; }
+    button { margin-top: 12px; border: 0; border-radius: 10px; padding: 11px 18px; background: #2257d6; color: white; font-weight: 700; cursor: pointer; }
+    button:disabled { opacity: .6; cursor: wait; }
+    .answer, .sources { margin-top: 16px; white-space: pre-wrap; line-height: 1.65; }
+    .source { border-top: 1px solid #e6ebf2; padding: 14px 0; }
+    .source:first-child { border-top: 0; padding-top: 0; }
+    .source strong { color: #2257d6; }
+    .hidden { display: none; }
+    .status { min-height: 24px; color: #69778b; margin: 12px 0 0; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>규정 챗봇</h1>
+    <p class="intro">복리후생규정·전결규정을 근거로 답합니다.</p>
+    <form id="chat-form">
+      <textarea id="question" placeholder="예: 배우자 출산휴가는 며칠인가요?" required></textarea>
+      <button id="submit" type="submit">질문하기</button>
+      <p id="status" class="status"></p>
+    </form>
+    <section id="answer" class="answer hidden"></section>
+    <section id="sources" class="sources hidden"></section>
+  </main>
+  <script>
+    const form = document.querySelector('#chat-form');
+    const question = document.querySelector('#question');
+    const submit = document.querySelector('#submit');
+    const status = document.querySelector('#status');
+    const answer = document.querySelector('#answer');
+    const sources = document.querySelector('#sources');
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      submit.disabled = true;
+      status.textContent = '관련 조항을 찾는 중입니다…';
+      answer.classList.add('hidden');
+      sources.classList.add('hidden');
+      try {
+        const response = await fetch('/api/chat', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ question: question.value })
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || '오류가 발생했습니다.');
+        answer.textContent = data.answer;
+        answer.classList.remove('hidden');
+        if (data.sources?.length) {
+          sources.innerHTML = '<strong>근거 조항</strong>' + data.sources.map((source) =>
+            `<div class="source"><strong>${source.regulation} ${source.article}</strong> ${source.title}<br>${source.text}</div>`
+          ).join('');
+          sources.classList.remove('hidden');
+        }
+        status.textContent = '';
+      } catch (error) {
+        status.textContent = error.message;
+      } finally {
+        submit.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
