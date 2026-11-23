@@ -12,6 +12,11 @@ const port = Number(process.env.PORT || 3001);
 const minSimilarity = Number(process.env.MIN_SIMILARITY || 0.25);
 const rrfK = 60;
 const retrievalLimit = 5;
+const rrfCandidateLimit = Number(process.env.RRF_CANDIDATE_LIMIT || 10);
+const keywordCandidateLimit = Number(process.env.RRF_KEYWORD_CANDIDATE_LIMIT || 3);
+const vectorWeight = Number(process.env.RRF_VECTOR_WEIGHT || 1.5);
+const keywordWeight = Number(process.env.RRF_KEYWORD_WEIGHT || 1);
+const keywordAnchorScore = Number(process.env.RRF_KEYWORD_ANCHOR_SCORE || 8);
 const rateLimitWindowMs = Number(process.env.RATE_LIMIT_WINDOW_MS || 60_000);
 const rateLimitMax = Number(process.env.RATE_LIMIT_MAX || 10);
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -93,29 +98,36 @@ function createBm25(records) {
         score += idf * (boostedTf * 2.2) / denominator;
       }
       return { ...record, bm25Score: score };
-    }).sort((a, b) => b.bm25Score - a.bm25Score).slice(0, retrievalLimit);
+    }).sort((a, b) => b.bm25Score - a.bm25Score).slice(0, keywordCandidateLimit);
   };
 }
 
 function hybridSearch(records, question, queryEmbedding) {
   const vectorResults = records
     .map((record) => ({ ...record, vectorScore: cosineSimilarity(queryEmbedding, record.embedding) }))
-    .sort((a, b) => b.vectorScore - a.vectorScore).slice(0, retrievalLimit);
+    .sort((a, b) => b.vectorScore - a.vectorScore).slice(0, rrfCandidateLimit);
   const keywordResults = createBm25(records)(question);
   const ranked = new Map();
   for (const [rank, record] of vectorResults.entries()) {
-    ranked.set(record.id, { ...record, rrfScore: 1 / (rrfK + rank + 1) });
+    ranked.set(record.id, { ...record, rrfScore: vectorWeight / (rrfK + rank + 1) });
   }
   for (const [rank, record] of keywordResults.entries()) {
     const current = ranked.get(record.id) || { ...record, rrfScore: 0 };
-    ranked.set(record.id, { ...current, bm25Score: record.bm25Score, rrfScore: current.rrfScore + 1 / (rrfK + rank + 1) });
+    ranked.set(record.id, { ...current, bm25Score: record.bm25Score, rrfScore: current.rrfScore + keywordWeight / (rrfK + rank + 1) });
   }
-  return [...ranked.values()].sort((a, b) => b.rrfScore - a.rrfScore).slice(0, retrievalLimit);
+  const fusedResults = [...ranked.values()].sort((a, b) => b.rrfScore - a.rrfScore);
+  const anchors = keywordResults.filter((record) => record.bm25Score >= keywordAnchorScore).slice(0, 1);
+  const selected = [];
+  for (const record of [...anchors, ...fusedResults]) {
+    if (!selected.some((item) => item.id === record.id)) selected.push(record);
+    if (selected.length === retrievalLimit) break;
+  }
+  return selected;
 }
 
 function formatContext(results) {
-  return results.map((item, index) =>
-    `[근거 ${index + 1}] ${item.regulation} ${item.article} ${item.title}\n${item.text}`
+  return results.map((item) =>
+    `[${item.regulation} · ${item.article} ${item.title}]\n${item.text}`
   ).join('\n\n');
 }
 
@@ -132,10 +144,9 @@ app.post('/api/chat', async (req, res) => {
     });
     const queryEmbedding = embeddingResponse.data[0].embedding;
     const results = hybridSearch(index.records, question, queryEmbedding);
-    const bestVectorScore = Math.max(...results.map((result) => result.vectorScore || 0));
-    const bestKeywordScore = Math.max(...results.map((result) => result.bm25Score || 0));
+    const bestVectorScore = Math.max(...index.records.map((record) => cosineSimilarity(queryEmbedding, record.embedding)));
 
-    if (!results.length || (bestVectorScore < minSimilarity && bestKeywordScore <= 0)) {
+    if (!results.length || bestVectorScore < minSimilarity) {
       return res.json({ answer: '규정에서 찾지 못했습니다', sources: [] });
     }
 

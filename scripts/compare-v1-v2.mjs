@@ -11,6 +11,11 @@ const index = JSON.parse(await fs.readFile(path.join(root, 'data', 'index.json')
 const tests = [...testsText.matchAll(/^\|\s*(\d+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|$/gm)]
   .map((m) => ({ number: Number(m[1]), type: m[2].trim(), question: m[3].trim(), expected: m[4].trim() }));
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const candidateLimit = Number(process.env.RRF_CANDIDATE_LIMIT || 10);
+const keywordCandidateLimit = Number(process.env.RRF_KEYWORD_CANDIDATE_LIMIT || 3);
+const vectorWeight = Number(process.env.RRF_VECTOR_WEIGHT || 1.5);
+const keywordWeight = Number(process.env.RRF_KEYWORD_WEIGHT || 1);
+const keywordAnchorScore = Number(process.env.RRF_KEYWORD_ANCHOR_SCORE || 8);
 
 function cosine(a, b) {
   let dot = 0; let aa = 0; let bb = 0;
@@ -47,7 +52,7 @@ function bm25(records, question) {
       score += idf * (frequency * 2.2) / (frequency + 1.2 * (1 - 0.75 + 0.75 * docs[i].length / avg));
     }
     return { id: record.id, score };
-  }).sort((a, b) => b.score - a.score).slice(0, 5);
+  }).sort((a, b) => b.score - a.score).slice(0, candidateLimit);
 }
 
 const embeddings = await client.embeddings.create({
@@ -59,28 +64,34 @@ const rows = tests.map((test, i) => {
     .sort((a, b) => b.score - a.score);
   const keyword = bm25(index.records, test.question);
   const ranked = new Map();
-  vector.slice(0, 5).forEach((item, rank) => ranked.set(item.id, { id: item.id, rrf: 1 / (60 + rank + 1) }));
-  keyword.forEach((item, rank) => ranked.set(item.id, { ...(ranked.get(item.id) || { id: item.id, rrf: 0 }), rrf: (ranked.get(item.id)?.rrf || 0) + 1 / (60 + rank + 1) }));
-  const hybrid = [...ranked.values()].sort((a, b) => b.rrf - a.rrf);
+  vector.slice(0, candidateLimit).forEach((item, rank) => ranked.set(item.id, { id: item.id, rrf: vectorWeight / (60 + rank + 1) }));
+  keyword.slice(0, keywordCandidateLimit).forEach((item, rank) => ranked.set(item.id, { ...(ranked.get(item.id) || { id: item.id, rrf: 0 }), rrf: (ranked.get(item.id)?.rrf || 0) + keywordWeight / (60 + rank + 1) }));
+  const fused = [...ranked.values()].sort((a, b) => b.rrf - a.rrf);
+  const anchors = keyword.filter((item) => item.score >= keywordAnchorScore).slice(0, 1);
+  const hybrid = [];
+  for (const item of [...anchors, ...fused]) {
+    if (!hybrid.some((selected) => selected.id === item.id)) hybrid.push(item);
+    if (hybrid.length === 5) break;
+  }
   const expected = test.expected === '없음' ? null : test.expected.replace(/제(\d+)조/g, '$1').replaceAll(' ', '-');
   const v1Rank = expected ? vector.findIndex((item) => item.id === expected) + 1 : null;
   const v2Rank = expected ? hybrid.findIndex((item) => item.id === expected) + 1 : null;
   const v1Correct = expected ? v1Rank > 0 && v1Rank <= 5 : vector[0].score < 0.25;
-  const v2Correct = expected ? v2Rank > 0 && v2Rank <= 5 : hybrid.every((item) => !keyword.some((k) => k.id === item.id && k.score > 0));
+  const v2Correct = expected ? v2Rank > 0 && v2Rank <= 5 : vector[0].score < 0.25;
   return {
     number: test.number, type: test.type, question: test.question, expected: test.expected,
-    v1Rank: v1Rank || '-', v2Rank: v2Rank || '-', v1Top: vector[0].id, v2Top: hybrid[0].id,
+    v1Rank: v1Rank || '-', v2Rank: v2Rank || '-', keywordRank: expected ? (keyword.findIndex((item) => item.id === expected) + 1 || '-') : '-', keywordTop: keyword[0]?.id, keywordTopScore: keyword[0]?.score, v1Top: vector[0].id, v2Top: hybrid[0].id,
     v1Correct, v2Correct, newlyFound: !v1Correct && v2Correct
   };
 });
 
-const apiChecks = await Promise.all(rows.map(async (row) => {
+const apiChecks = process.env.CHECK_API === '1' ? await Promise.all(rows.map(async (row) => {
   const response = await fetch('http://localhost:3001/api/chat', {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ question: row.question })
   });
   const body = await response.json();
   return { number: row.number, answerNotFound: body.answer === '규정에서 찾지 못했습니다', sourceCount: body.sources?.length || 0 };
-}));
+})) : [];
 for (const check of apiChecks) Object.assign(rows.find((row) => row.number === check.number), check);
 
 console.log(JSON.stringify(rows));
