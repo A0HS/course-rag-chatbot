@@ -19,13 +19,18 @@ const keywordWeight = Number(process.env.RRF_KEYWORD_WEIGHT || 1);
 const keywordAnchorScore = Number(process.env.RRF_KEYWORD_ANCHOR_SCORE || 8);
 const rateLimitWindowMs = Number(process.env.RATE_LIMIT_WINDOW_MS || 60_000);
 const rateLimitMax = Number(process.env.RATE_LIMIT_MAX || 10);
-const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const serverApiKey = process.env.OPENAI_API_KEY?.trim() || '';
 const app = express();
 const requestCounts = new Map();
 
 app.set('trust proxy', true);
 app.use(express.json({ limit: '32kb' }));
 app.use(express.static(path.join(root, 'public')));
+
+app.get('/api/config', (_req, res) => {
+  // Only expose whether a server key exists; never send the key to the browser.
+  res.json({ serverApiKeyConfigured: Boolean(serverApiKey) });
+});
 
 app.use('/api/chat', (req, res, next) => {
   const forwardedFor = req.headers['x-forwarded-for'];
@@ -136,6 +141,14 @@ app.post('/api/chat', async (req, res) => {
     const question = String(req.body?.question || '').trim();
     if (!question) return res.status(400).json({ error: '질문을 입력해 주세요.' });
 
+    // Prefer the server key. A browser key is used only for this request and is
+    // never written to disk, logged, or included in a response.
+    const requestApiKey = serverApiKey || String(req.body?.apiKey || '').trim();
+    if (!requestApiKey) {
+      return res.status(400).json({ error: 'OpenAI API 키를 입력하거나 서버 환경변수 OPENAI_API_KEY를 설정해 주세요.' });
+    }
+    const client = new OpenAI({ apiKey: requestApiKey });
+
     const index = JSON.parse(await fs.readFile(indexPath, 'utf8'));
     const embeddingResponse = await client.embeddings.create({
       model: 'text-embedding-3-small',
@@ -168,8 +181,7 @@ app.post('/api/chat', async (req, res) => {
       answer: notFound ? '규정에서 찾지 못했습니다' : answer,
       sources: notFound ? [] : results.map(({ embedding, searchableText, ...source }) => source)
     });
-  } catch (error) {
-    console.error(error);
+  } catch {
     res.status(500).json({ error: '답변을 만드는 중 오류가 발생했습니다.' });
   }
 });
