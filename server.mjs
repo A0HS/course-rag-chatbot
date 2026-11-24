@@ -181,7 +181,12 @@ app.post('/api/chat', async (req, res) => {
       answer: notFound ? '규정에서 찾지 못했습니다' : answer,
       sources: notFound ? [] : results.map(({ embedding, searchableText, ...source }) => source)
     });
-  } catch {
+  } catch (error) {
+    // Log only the status and message. Never log the request body (it may contain a key).
+    console.error('chat error', error?.status || '', error?.message || error);
+    if (error?.status === 401) {
+      return res.status(401).json({ error: 'OpenAI API 키가 올바르지 않습니다. 키를 다시 확인해 주세요.' });
+    }
     res.status(500).json({ error: '답변을 만드는 중 오류가 발생했습니다.' });
   }
 });
